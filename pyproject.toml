@@ -11,6 +11,7 @@ python = ">=3.9,<3.13"
 pydicom = "^2.4.0"
 rerun-sdk = "^0.18.0"
 numpy = "^1.26.0"
+scikit-image = "^0.22.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.0"

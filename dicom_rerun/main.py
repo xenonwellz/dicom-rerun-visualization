@@ -4,6 +4,7 @@ from pathlib import Path
 import pydicom
 import rerun as rr
 import numpy as np
+from skimage import measure
 
 
 def setup_logging():
@@ -53,7 +54,7 @@ def load_and_sort_dicom_files(folder_path):
             try:
                 dicom_data = pydicom.dcmread(str(file_path), force=True)
                 valid_dicom_files += 1
-                    
+                
                 series_uid = getattr(dicom_data, 'SeriesInstanceUID', 'UNKNOWN_SERIES')
                 series_description = getattr(dicom_data, 'SeriesDescription', 'N/A')
                 modality = getattr(dicom_data, 'Modality', 'N/A')
@@ -132,6 +133,75 @@ File Path: {file_path}
         logger.info(f"  Instance: {instance_number}")
 
 
+def create_mesh_from_volume(volume_3d, entity_path, metadata_info):
+    """
+    Create 3D mesh from volume data using marching cubes algorithm.
+    
+    Args:
+        volume_3d (np.ndarray): 3D volume data
+        entity_path (str): Rerun entity path for the mesh
+        metadata_info (dict): DICOM metadata for the series
+    """
+    logger = setup_logging()
+    
+    try:
+        volume_normalized = (volume_3d - np.min(volume_3d)) / (np.max(volume_3d) - np.min(volume_3d))
+        thresholds = [0.3, 0.5, 0.7]  # Different tissue density levels
+        #  Red, Green, White
+        colors = [
+            [0.8, 0.2, 0.2, 0.7],
+            [0.2, 0.8, 0.2, 0.8],
+            [0.9, 0.9, 0.9, 0.9]
+        ]
+        
+        for i, threshold in enumerate(thresholds):
+            try:
+                # Use marching cubes to extract mesh
+                verts, faces, normals, values = measure.marching_cubes(
+                    volume_normalized, 
+                    level=threshold,
+                    spacing=(1.0, 1.0, 1.0)
+                )
+                
+                if len(verts) > 0 and len(faces) > 0:
+                    # Create mesh entity path for this threshold
+                    mesh_path = f"{entity_path}/threshold_{threshold:.1f}"
+                    
+                    # Log the mesh to Rerun
+                    rr.log(
+                        mesh_path,
+                        rr.Mesh3D(
+                            vertex_positions=verts,
+                            triangle_indices=faces,
+                            vertex_normals=normals,
+                            vertex_colors=colors[i]
+                        )
+                    )
+                    
+                    # Create mesh metadata
+                    mesh_metadata = f"""
+Mesh Level: {threshold:.1f}
+Vertices: {len(verts)}
+Faces: {len(faces)}
+Color: {'Soft Tissue' if i == 0 else 'Medium Density' if i == 1 else 'Bone/High Density'}
+Series: {metadata_info['series_description']}
+Modality: {metadata_info['modality']}
+                    """.strip()
+                    
+                    rr.log(f"{mesh_path}/info", rr.TextDocument(mesh_metadata))
+                    
+                    logger.info(f"Created mesh at threshold {threshold:.1f}: {len(verts)} vertices, {len(faces)} faces")
+                else:
+                    logger.warning(f"No mesh generated at threshold {threshold:.1f}")
+                    
+            except Exception as e:
+                logger.error(f"Error creating mesh at threshold {threshold:.1f}: {str(e)}")
+                continue
+                
+    except Exception as e:
+        logger.error(f"Error in mesh creation: {str(e)}")
+
+
 def create_3d_volumes(dicom_files):
     """
     Create 3D volumes by stacking sorted DICOM instances and log to Rerun.
@@ -164,9 +234,13 @@ def create_3d_volumes(dicom_files):
             # Stack arrays along a new axis (depth)
             volume_3d = np.stack(pixel_arrays, axis=0)
             
-            # Log 3D volume to Rerun
-            volume_entity_path = f"volumes/{series_uid}"
-            rr.log(volume_entity_path, rr.Tensor(volume_3d))
+            # Log 3D tensor volume to Rerun
+            tensor_entity_path = f"volumes/tensor/{series_uid}"
+            rr.log(tensor_entity_path, rr.Tensor(volume_3d))
+            
+            # Create 3D mesh using marching cubes
+            mesh_entity_path = f"volumes/mesh/{series_uid}"
+            create_mesh_from_volume(volume_3d, mesh_entity_path, series_files[0])
             
             # Create volume metadata
             first_file = series_files[0]
@@ -182,9 +256,13 @@ Min Value: {np.min(volume_3d)}
 Max Value: {np.max(volume_3d)}
 Mean Value: {np.mean(volume_3d):.2f}
 Instance Numbers: {[f['instance_number'] for f in series_files]}
+
+Available visualizations:
+- Tensor: volumes/tensor/{series_uid}
+- 3D Mesh: volumes/mesh/{series_uid}
             """.strip()
             
-            rr.log(f"{volume_entity_path}/metadata", rr.TextDocument(volume_metadata))
+            rr.log(f"volumes/{series_uid}/metadata", rr.TextDocument(volume_metadata))
             
             logger.info(f"Created 3D volume for series {series_uid}")
             logger.info(f"  Volume shape: {volume_3d.shape}")
@@ -229,8 +307,15 @@ DICOM Processing Summary
 Total valid DICOM files: {total_files}
 Number of series: {series_count}
 
-Individual images are logged under: series/{{series_uid}}
-3D volumes are logged under: volumes/{{series_uid}}
+Visualization Options:
+• Individual images: series/{{series_uid}}
+• 3D tensor volumes: volumes/tensor/{{series_uid}}
+• 3D mesh surfaces: volumes/mesh/{{series_uid}}
+  - Red mesh: Soft tissue (threshold 0.3)
+  - Green mesh: Medium density (threshold 0.5)  
+  - White mesh: Bone/high density (threshold 0.7)
+
+Navigate the tree structure to explore different visualizations!
     """.strip()
     
     rr.log("summary", rr.TextDocument(summary_text))
@@ -246,7 +331,7 @@ def main():
             logger.error("No folder path provided")
             return
         
-        logger.info(f"Starting DICOM analysis with Rerun for folder: {dicom_folder}")
+            logger.info(f"Starting DICOM analysis with Rerun for folder: {dicom_folder}")
         
         process_dicom_folder(dicom_folder)
         

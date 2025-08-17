@@ -1,1 +1,4 @@
 dicom_analysis.log
+.venv
+**/*.pyc
+**/__pycache__/
