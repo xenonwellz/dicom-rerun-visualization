@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "dicom_rerun"
+version = "0.1.0"
+description = "Example rerun project for DICOM files"
+authors = ["Obed Ovabor <obed.ovabor@example.com>"]
+readme = "README.md"
+packages = [{include = "dicom_rerun", from = "."}]
+
+[tool.poetry.dependencies]
+python = ">=3.9,<3.13"
+pydicom = "^2.4.0"
+rerun-sdk = "^0.18.0"
+numpy = "^1.26.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.0"
+black = "^23.0"
+flake8 = "^6.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+dicom-rerun = "dicom_rerun.main:main"
