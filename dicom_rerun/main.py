@@ -18,26 +18,32 @@ def setup_logging():
     return logging.getLogger(__name__)
 
 
-def process_dicom_folder(folder_path):
+def load_and_sort_dicom_files(folder_path):
+    """
+    Load and sort DICOM files from a folder.
+    
+    Args:
+        folder_path (str): Path to the folder containing DICOM files
+        
+    Returns:
+        list: Sorted list of DICOM file metadata dictionaries
+    """
     logger = setup_logging()
     folder_path = Path(folder_path)
     
     if not folder_path.exists():
         logger.error(f"Folder does not exist: {folder_path}")
-        return
+        return []
     
     if not folder_path.is_dir():
         logger.error(f"Path is not a directory: {folder_path}")
-        return
+        return []
     
-    rr.init("dicom_viewer", spawn=True)
-    
-    logger.info(f"Starting to process DICOM files from: {folder_path}")
+    logger.info(f"Starting to load DICOM files from: {folder_path}")
     
     total_files = 0
     valid_dicom_files = 0
     invalid_files = 0
-    
     dicom_files = []
     
     for file_path in folder_path.rglob('*'):
@@ -56,7 +62,6 @@ def process_dicom_folder(folder_path):
                 logger.info(f"Processing instance: {instance_number}")
                 
                 if hasattr(dicom_data, 'pixel_array'):
-                    # Store file info for sorting
                     dicom_files.append({
                         'file_path': file_path,
                         'dicom_data': dicom_data,
@@ -77,7 +82,24 @@ def process_dicom_folder(folder_path):
     logger.info(f"Sorting DICOM files by series UID, then by instance number")
     dicom_files.sort(key=lambda x: (x['series_uid'], x['instance_number']))
     
-    logger.info(f"Processing sorted DICOM files")
+    logger.info(f"Loading complete!")
+    logger.info(f"Total files: {total_files}")
+    logger.info(f"Valid DICOM files: {valid_dicom_files}")
+    logger.info(f"Invalid files: {invalid_files}")
+    
+    return dicom_files
+
+
+def log_individual_series(dicom_files):
+    """
+    Log individual DICOM images to Rerun by series.
+    
+    Args:
+        dicom_files (list): Sorted list of DICOM file metadata
+    """
+    logger = setup_logging()
+    logger.info(f"Logging individual series to Rerun")
+    
     for file_info in dicom_files:
         file_path = file_info['file_path']
         pixel_array = file_info['pixel_array']
@@ -105,28 +127,110 @@ File Path: {file_path}
         
         rr.log(f"{entity_path}/metadata", rr.TextDocument(metadata_text))
         
-        logger.info(f"Processed DICOM: {file_path}")
+        logger.info(f"Logged DICOM: {file_path}")
         logger.info(f"  Series: {series_uid}")
         logger.info(f"  Instance: {instance_number}")
-        logger.info(f"  Shape: {pixel_array.shape}")
-        logger.info(f"  Data type: {pixel_array.dtype}")
-        logger.info(f"  Value range: [{np.min(pixel_array)}, {np.max(pixel_array)}]")
+
+
+def create_3d_volumes(dicom_files):
+    """
+    Create 3D volumes by stacking sorted DICOM instances and log to Rerun.
     
-    logger.info(f"Processing complete!")
-    logger.info(f"Total files: {total_files}")
-    logger.info(f"Valid DICOM files: {valid_dicom_files}")
-    logger.info(f"Invalid files: {invalid_files}")
+    Args:
+        dicom_files (list): Sorted list of DICOM file metadata
+    """
+    logger = setup_logging()
+    logger.info(f"Creating 3D volumes from sorted DICOM instances")
+    
+    # Group files by series
+    series_groups = {}
+    for file_info in dicom_files:
+        series_uid = file_info['series_uid']
+        if series_uid not in series_groups:
+            series_groups[series_uid] = []
+        series_groups[series_uid].append(file_info)
+    
+    for series_uid, series_files in series_groups.items():
+        if len(series_files) < 2:
+            logger.warning(f"Series {series_uid} has only {len(series_files)} images, skipping 3D volume creation")
+            continue
+            
+        logger.info(f"Creating 3D volume for series {series_uid} with {len(series_files)} slices")
+        
+        # Stack pixel arrays to create 3D volume
+        pixel_arrays = [file_info['pixel_array'] for file_info in series_files]
+        
+        try:
+            # Stack arrays along a new axis (depth)
+            volume_3d = np.stack(pixel_arrays, axis=0)
+            
+            # Log 3D volume to Rerun
+            volume_entity_path = f"volumes/{series_uid}"
+            rr.log(volume_entity_path, rr.Tensor(volume_3d))
+            
+            # Create volume metadata
+            first_file = series_files[0]
+            volume_metadata = f"""
+3D Volume - {first_file['series_description']}
+Series UID: {series_uid}
+Modality: {first_file['modality']}
+Patient ID: {first_file['patient_id']}
+Number of slices: {len(series_files)}
+Volume Shape: {volume_3d.shape}
+Data Type: {volume_3d.dtype}
+Min Value: {np.min(volume_3d)}
+Max Value: {np.max(volume_3d)}
+Mean Value: {np.mean(volume_3d):.2f}
+Instance Numbers: {[f['instance_number'] for f in series_files]}
+            """.strip()
+            
+            rr.log(f"{volume_entity_path}/metadata", rr.TextDocument(volume_metadata))
+            
+            logger.info(f"Created 3D volume for series {series_uid}")
+            logger.info(f"  Volume shape: {volume_3d.shape}")
+            logger.info(f"  Number of slices: {len(series_files)}")
+            
+        except Exception as e:
+            logger.error(f"Error creating 3D volume for series {series_uid}: {str(e)}")
+
+
+def process_dicom_folder(folder_path):
+    """
+    Main processing function that loads DICOM files and creates both individual series and 3D volumes.
+    
+    Args:
+        folder_path (str): Path to the folder containing DICOM files
+    """
+    logger = setup_logging()
+    
+    # Initialize Rerun
+    rr.init("dicom_viewer", spawn=True)
+    
+    # Load and sort DICOM files
+    dicom_files = load_and_sort_dicom_files(folder_path)
+    
+    if not dicom_files:
+        logger.error("No valid DICOM files found")
+        return
+    
+    # Log individual series
+    log_individual_series(dicom_files)
+    
+    # Create and log 3D volumes
+    create_3d_volumes(dicom_files)
+    
+    # Log summary
+    total_files = len(dicom_files)
+    series_count = len(set(f['series_uid'] for f in dicom_files))
     
     summary_text = f"""
 DICOM Processing Summary
 |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
-Total files processed: {total_files}
-Valid DICOM files: {valid_dicom_files}
-Invalid files: {invalid_files}
-Success rate: {(valid_dicom_files/total_files*100):.1f}% if total_files > 0 else N/A
+Total valid DICOM files: {total_files}
+Number of series: {series_count}
 
-Check the series hierarchy to view individual DICOM images.
-Each series is grouped by its SeriesInstanceUID.
+Individual images are logged under: series/{{series_uid}}
+3D volumes are logged under: volumes/{{series_uid}}
     """.strip()
     
     rr.log("summary", rr.TextDocument(summary_text))
