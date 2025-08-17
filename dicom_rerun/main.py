@@ -38,6 +38,8 @@ def process_dicom_folder(folder_path):
     valid_dicom_files = 0
     invalid_files = 0
     
+    dicom_files = []
+    
     for file_path in folder_path.rglob('*'):
         if file_path.is_file():
             total_files += 1
@@ -51,13 +53,44 @@ def process_dicom_folder(folder_path):
                 modality = getattr(dicom_data, 'Modality', 'N/A')
                 patient_id = getattr(dicom_data, 'PatientID', 'N/A')
                 instance_number = getattr(dicom_data, 'InstanceNumber', 0)
+                logger.info(f"Processing instance: {instance_number}")
                 
                 if hasattr(dicom_data, 'pixel_array'):
-                    pixel_array = dicom_data.pixel_array
+                    # Store file info for sorting
+                    dicom_files.append({
+                        'file_path': file_path,
+                        'dicom_data': dicom_data,
+                        'series_uid': series_uid,
+                        'series_description': series_description,
+                        'modality': modality,
+                        'patient_id': patient_id,
+                        'instance_number': instance_number,
+                        'pixel_array': dicom_data.pixel_array
+                    })
+                else:
+                    logger.warning(f"No pixel data found in file: {file_path}")
                     
-                    entity_path = f"series/{series_uid}"
-                    rr.log(entity_path, rr.Image(pixel_array))
-                    metadata_text = f"""
+            except Exception as e:
+                invalid_files += 1
+                logger.error(f"Error processing file {file_path}: {str(e)}")
+    
+    logger.info(f"Sorting DICOM files by series UID, then by instance number")
+    dicom_files.sort(key=lambda x: (x['series_uid'], x['instance_number']))
+    
+    logger.info(f"Processing sorted DICOM files")
+    for file_info in dicom_files:
+        file_path = file_info['file_path']
+        pixel_array = file_info['pixel_array']
+        series_uid = file_info['series_uid']
+        series_description = file_info['series_description']
+        modality = file_info['modality']
+        patient_id = file_info['patient_id']
+        instance_number = file_info['instance_number']
+        
+        entity_path = f"series/{series_uid}"
+        rr.log(entity_path, rr.Image(pixel_array))
+        
+        metadata_text = f"""
 Series Description: {series_description}
 Modality: {modality}
 Patient ID: {patient_id}
@@ -68,31 +101,16 @@ Min Value: {np.min(pixel_array)}
 Max Value: {np.max(pixel_array)}
 Mean Value: {np.mean(pixel_array):.2f}
 File Path: {file_path}
-                    """.strip()
-                    
-                    rr.log(f"{entity_path}/metadata", rr.TextDocument(metadata_text))
-                    
-                    pixel_stats = {
-                        "shape": pixel_array.shape,
-                        "dtype": str(pixel_array.dtype),
-                        "min": float(np.min(pixel_array)),
-                        "max": float(np.max(pixel_array)),
-                        "mean": float(np.mean(pixel_array)),
-                        "std": float(np.std(pixel_array))
-                    }
-                    
-                    logger.info(f"Processed DICOM: {file_path}")
-                    logger.info(f"  Series: {series_uid}")
-                    logger.info(f"  Shape: {pixel_array.shape}")
-                    logger.info(f"  Data type: {pixel_array.dtype}")
-                    logger.info(f"  Value range: [{np.min(pixel_array)}, {np.max(pixel_array)}]")
-                    
-                else:
-                    logger.warning(f"No pixel data found in file: {file_path}")
-                    
-            except Exception as e:
-                invalid_files += 1
-                logger.error(f"Error processing file {file_path}: {str(e)}")
+        """.strip()
+        
+        rr.log(f"{entity_path}/metadata", rr.TextDocument(metadata_text))
+        
+        logger.info(f"Processed DICOM: {file_path}")
+        logger.info(f"  Series: {series_uid}")
+        logger.info(f"  Instance: {instance_number}")
+        logger.info(f"  Shape: {pixel_array.shape}")
+        logger.info(f"  Data type: {pixel_array.dtype}")
+        logger.info(f"  Value range: [{np.min(pixel_array)}, {np.max(pixel_array)}]")
     
     logger.info(f"Processing complete!")
     logger.info(f"Total files: {total_files}")
