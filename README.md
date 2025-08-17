@@ -45,20 +45,7 @@ curl -sSL https://install.python-poetry.org | python3 -
 poetry install
 ```
 
-## Usage
-
-### Run the DICOM Viewer
-
-```bash
-poetry run python dicom_rerun/main.py
-```
-
-Or activate the virtual environment and run directly:
-
-```bash
-poetry shell
-python dicom_rerun/main.py
-```
+This will install the dependencies and create a virtual environment.
 
 ### Using the Script Command
 
