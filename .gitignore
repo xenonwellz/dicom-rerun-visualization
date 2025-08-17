@@ -2,3 +2,4 @@ dicom_analysis.log
 .venv
 **/*.pyc
 **/__pycache__/
+session.rrd

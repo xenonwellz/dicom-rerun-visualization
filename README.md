@@ -148,7 +148,7 @@ dicom_rerun/
 ## Dependencies
 
 ### Core Libraries
-- **Python**: ≥3.9, <3.13
+- **Python**: ≥3.10, <3.13
 - **pydicom**: ^2.4.0 - DICOM file processing
 - **rerun-sdk**: ^0.18.0 - Interactive 3D visualization
 - **numpy**: ^1.26.0 - Numerical computations

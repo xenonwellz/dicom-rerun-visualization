@@ -282,7 +282,7 @@ def process_dicom_folder(folder_path):
     logger = setup_logging()
     
     # Initialize Rerun
-    rr.init("dicom_viewer", spawn=True)
+    rr.init("dicom_viewer")
     
     # Load and sort DICOM files
     dicom_files = load_and_sort_dicom_files(folder_path)
@@ -322,24 +322,22 @@ Navigate the tree structure to explore different visualizations!
 
 
 def main():
-    try:
-        logger = setup_logging()
-        
-        dicom_folder = input("Enter the path to the DICOM folder: ").strip()
-        
-        if not dicom_folder:
-            logger.error("No folder path provided")
-            return
-        
-            logger.info(f"Starting DICOM analysis with Rerun for folder: {dicom_folder}")
-        
-        process_dicom_folder(dicom_folder)
-        
-        logger.info("DICOM analysis complete. Rerun viewer should be open with visualizations.")
-    except Exception as e:
-        logger.error(f"Error: {str(e)}")
+    logger = setup_logging()
+    
+    dicom_folder = input("Enter the path to the DICOM folder: ").strip()
+    
+    if not dicom_folder:
+        logger.error("No folder path provided")
         return
     
+    logger.info(f"Starting DICOM analysis with Rerun for folder: {dicom_folder}")
+    
+    process_dicom_folder(dicom_folder)
+    
+    logger.info("DICOM analysis complete. Rerun viewer should be open with visualizations.")
+    
+    rr.save("session.rrd")
+
     input("Press Enter to exit...")
 
 
