@@ -22,12 +22,12 @@ FROM nginx:alpine
 # Copy built assets from builder stage
 COPY --from=builder /app/dist /usr/share/nginx/html
 
+WORKDIR /usr/share/nginx/html
+
 # Since i have built my rrd file and uploaded to google drive, i can just download it and put it in the nginx folder
 # Ideally, you will need to build this file in the dockerfile or in any build stage you prefer
 
 RUN wget https://drive.usercontent.google.com/download?id=1HSqGpZlMlN3gsgICPplX-YjSyc1sFQbb&export=download&authuser=0&confirm=t&uuid=30b79162-e6a5-4afb-bc68-2663c0828a16&at=AN8xHoqB0DXKsOjoYM1QOuyCaXzU%3A1755471735238 -O session.rrd
-
-COPY session.rrd /usr/share/nginx/html/session.rrd
 
 # Copy nginx configuration
 COPY nginx.conf /etc/nginx/nginx.conf
