@@ -25,14 +25,20 @@ def create_blueprint():
             rrb.Horizontal(
                 rrb.Spatial3DView(
                     name="3D Meshes",
-                    origin="volumes/mesh",
+                    origin="mesh",
                     contents=["+ $origin/**"]
                 ),
-                rrb.Spatial3DView(
-                    name="3D Tensor Volumes",
-                    origin="volumes/tensor",
+                rrb.TensorView(
+                    name="Tensor Volumes",
+                    origin="tensor",
                     contents=["+ $origin/**"]
                 )
+            ),
+            # Metadata view
+            rrb.TextDocumentView(
+                name="Metadata",
+                origin="series",
+                contents=["+ $origin/**"]
             )
         )
     )
@@ -52,28 +58,94 @@ def setup_logging():
     return logging.getLogger(__name__)
 
 
-def load_and_sort_dicom_files(folder_path):
+def validate_folder_path(folder_path):
     """
-    Load and sort DICOM files from a folder.
+    Validate that the provided folder path exists and is a directory.
     
     Args:
-        folder_path (str): Path to the folder containing DICOM files
+        folder_path (Path): Path object to validate
         
     Returns:
-        list: Sorted list of DICOM file metadata dictionaries
+        bool: True if valid, False otherwise
     """
     logger = setup_logging()
-    folder_path = Path(folder_path)
     
     if not folder_path.exists():
         logger.error(f"Folder does not exist: {folder_path}")
-        return []
+        return False
     
     if not folder_path.is_dir():
         logger.error(f"Path is not a directory: {folder_path}")
-        return []
+        return False
     
-    logger.info(f"Starting to load DICOM files from: {folder_path}")
+    return True
+
+
+def extract_dicom_metadata(dicom_data):
+    """
+    Extract relevant metadata from a DICOM dataset.
+    
+    Args:
+        dicom_data: PyDICOM dataset object
+        
+    Returns:
+        dict: Dictionary containing extracted metadata
+    """
+    return {
+        'series_uid': getattr(dicom_data, 'SeriesInstanceUID', 'UNKNOWN_SERIES'),
+        'series_description': getattr(dicom_data, 'SeriesDescription', 'N/A'),
+        'modality': getattr(dicom_data, 'Modality', 'N/A'),
+        'patient_id': getattr(dicom_data, 'PatientID', 'N/A'),
+        'instance_number': getattr(dicom_data, 'InstanceNumber', 0)
+    }
+
+
+def process_single_dicom_file(file_path):
+    """
+    Process a single DICOM file and extract its data and metadata.
+    
+    Args:
+        file_path (Path): Path to the DICOM file
+        
+    Returns:
+        dict or None: DICOM file information dictionary or None if processing failed
+    """
+    logger = setup_logging()
+    
+    try:
+        dicom_data = pydicom.dcmread(str(file_path), force=True)
+        metadata = extract_dicom_metadata(dicom_data)
+        
+        logger.info(f"Processing instance: {metadata['instance_number']}")
+        
+        if hasattr(dicom_data, 'pixel_array'):
+            return {
+                'file_path': file_path,
+                'dicom_data': dicom_data,
+                'pixel_array': dicom_data.pixel_array,
+                **metadata
+            }
+        else:
+            logger.warning(f"No pixel data found in file: {file_path}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error processing file {file_path}: {str(e)}")
+        return None
+
+
+def scan_dicom_files(folder_path):
+    """
+    Scan a folder recursively for DICOM files and process them.
+    
+    Args:
+        folder_path (Path): Path to the folder containing DICOM files
+        
+    Returns:
+        tuple: (dicom_files list, total_files count, valid_files count, invalid_files count)
+    """
+    logger = setup_logging()
+    logger.info(f"Starting to scan DICOM files from: {folder_path}")
     
     total_files = 0
     valid_dicom_files = 0
@@ -84,44 +156,119 @@ def load_and_sort_dicom_files(folder_path):
         if file_path.is_file():
             total_files += 1
             
-            try:
-                dicom_data = pydicom.dcmread(str(file_path), force=True)
+            file_info = process_single_dicom_file(file_path)
+            if file_info:
+                dicom_files.append(file_info)
                 valid_dicom_files += 1
-                
-                series_uid = getattr(dicom_data, 'SeriesInstanceUID', 'UNKNOWN_SERIES')
-                series_description = getattr(dicom_data, 'SeriesDescription', 'N/A')
-                modality = getattr(dicom_data, 'Modality', 'N/A')
-                patient_id = getattr(dicom_data, 'PatientID', 'N/A')
-                instance_number = getattr(dicom_data, 'InstanceNumber', 0)
-                logger.info(f"Processing instance: {instance_number}")
-                
-                if hasattr(dicom_data, 'pixel_array'):
-                    dicom_files.append({
-                        'file_path': file_path,
-                        'dicom_data': dicom_data,
-                        'series_uid': series_uid,
-                        'series_description': series_description,
-                        'modality': modality,
-                        'patient_id': patient_id,
-                        'instance_number': instance_number,
-                        'pixel_array': dicom_data.pixel_array
-                    })
-                else:
-                    logger.warning(f"No pixel data found in file: {file_path}")
-                    
-            except Exception as e:
+            else:
                 invalid_files += 1
-                logger.error(f"Error processing file {file_path}: {str(e)}")
     
-    logger.info(f"Sorting DICOM files by series UID, then by instance number")
+    return dicom_files, total_files, valid_dicom_files, invalid_files
+
+
+def sort_dicom_files(dicom_files):
+    """
+    Sort DICOM files by series UID and instance number.
+    
+    Args:
+        dicom_files (list): List of DICOM file dictionaries
+        
+    Returns:
+        list: Sorted list of DICOM files
+    """
+    logger = setup_logging()
+    logger.info("Sorting DICOM files by series UID, then by instance number")
+    
     dicom_files.sort(key=lambda x: (x['series_uid'], x['instance_number']))
+    return dicom_files
+
+
+def log_loading_summary(total_files, valid_files, invalid_files):
+    """
+    Log summary statistics about the DICOM loading process.
     
-    logger.info(f"Loading complete!")
+    Args:
+        total_files (int): Total number of files processed
+        valid_files (int): Number of valid DICOM files
+        invalid_files (int): Number of invalid files
+    """
+    logger = setup_logging()
+    logger.info("Loading complete!")
     logger.info(f"Total files: {total_files}")
-    logger.info(f"Valid DICOM files: {valid_dicom_files}")
+    logger.info(f"Valid DICOM files: {valid_files}")
     logger.info(f"Invalid files: {invalid_files}")
+
+
+def load_and_sort_dicom_files(folder_path):
+    """
+    Load and sort DICOM files from a folder.
+    
+    Args:
+        folder_path (str): Path to the folder containing DICOM files
+        
+    Returns:
+        list: Sorted list of DICOM file metadata dictionaries
+    """
+    folder_path = Path(folder_path)
+    
+    if not validate_folder_path(folder_path):
+        return []
+    
+    dicom_files, total_files, valid_files, invalid_files = scan_dicom_files(folder_path)
+    dicom_files = sort_dicom_files(dicom_files)
+    log_loading_summary(total_files, valid_files, invalid_files)
     
     return dicom_files
+
+
+def create_image_metadata_text(file_info):
+    """
+    Create metadata text for a DICOM image.
+    
+    Args:
+        file_info (dict): DICOM file information dictionary
+        
+    Returns:
+        str: Formatted metadata text
+    """
+    pixel_array = file_info['pixel_array']
+    
+    return f"""
+Series Description: {file_info['series_description']}
+Modality: {file_info['modality']}
+Patient ID: {file_info['patient_id']}
+Instance Number: {file_info['instance_number']}
+Image Shape: {pixel_array.shape}
+Image Data Type: {pixel_array.dtype}
+Min Value: {np.min(pixel_array)}
+Max Value: {np.max(pixel_array)}
+Mean Value: {np.mean(pixel_array):.2f}
+File Path: {file_info['file_path']}
+    """.strip()
+
+
+def log_single_dicom_image(file_info):
+    """
+    Log a single DICOM image and its metadata to Rerun.
+    
+    Args:
+        file_info (dict): DICOM file information dictionary
+    """
+    logger = setup_logging()
+    
+    series_uid = file_info['series_uid']
+    entity_path = f"series/{series_uid}"
+    
+    # Log the image
+    rr.log(entity_path, rr.Image(file_info['pixel_array']))
+    
+    # Log the metadata
+    metadata_text = create_image_metadata_text(file_info)
+    rr.log(f"{entity_path}/metadata", rr.TextDocument(metadata_text))
+    
+    # Log progress
+    logger.info(f"Logged DICOM: {file_info['instance_number']}")
+    logger.info(f"  Series: {series_uid}")
 
 
 def log_individual_series(dicom_files):
@@ -132,38 +279,142 @@ def log_individual_series(dicom_files):
         dicom_files (list): Sorted list of DICOM file metadata
     """
     logger = setup_logging()
-    logger.info(f"Logging individual series to Rerun")
+    logger.info("Logging individual series to Rerun")
     
     for file_info in dicom_files:
-        file_path = file_info['file_path']
-        pixel_array = file_info['pixel_array']
-        series_uid = file_info['series_uid']
-        series_description = file_info['series_description']
-        modality = file_info['modality']
-        patient_id = file_info['patient_id']
-        instance_number = file_info['instance_number']
+        log_single_dicom_image(file_info)
+
+
+def normalize_volume(volume_3d):
+    """
+    Normalize 3D volume data to range [0, 1].
+    
+    Args:
+        volume_3d (np.ndarray): 3D volume data
         
-        entity_path = f"series/{series_uid}"
-        rr.log(entity_path, rr.Image(pixel_array))
+    Returns:
+        np.ndarray: Normalized volume data
+    """
+    min_val = np.min(volume_3d)
+    max_val = np.max(volume_3d)
+    
+    if max_val == min_val:
+        return np.zeros_like(volume_3d)
+    
+    return (volume_3d - min_val) / (max_val - min_val)
+
+
+def get_mesh_configuration():
+    """
+    Get mesh thresholds and colors configuration.
+    
+    Returns:
+        tuple: (thresholds list, colors list)
+    """
+    thresholds = [0.3, 0.5, 0.7]  # Different tissue density levels
+    colors = [
+        [0.8, 0.2, 0.2, 0.7],  # Red - Soft tissue
+        [0.2, 0.8, 0.2, 0.8],  # Green - Medium density
+        [0.9, 0.9, 0.9, 0.9]   # White - Bone/high density
+    ]
+    return thresholds, colors
+
+
+def get_tissue_type_name(threshold_index):
+    """
+    Get tissue type name based on threshold index.
+    
+    Args:
+        threshold_index (int): Index of the threshold
         
-        metadata_text = f"""
-Series Description: {series_description}
-Modality: {modality}
-Patient ID: {patient_id}
-Instance Number: {instance_number}
-Image Shape: {pixel_array.shape}
-Image Data Type: {pixel_array.dtype}
-Min Value: {np.min(pixel_array)}
-Max Value: {np.max(pixel_array)}
-Mean Value: {np.mean(pixel_array):.2f}
-File Path: {file_path}
-        """.strip()
+    Returns:
+        str: Tissue type name
+    """
+    tissue_types = ['Soft Tissue', 'Medium Density', 'Bone/High Density']
+    return tissue_types[threshold_index] if threshold_index < len(tissue_types) else 'Unknown'
+
+
+def create_mesh_metadata_text(threshold, vertices_count, faces_count, tissue_type, metadata_info):
+    """
+    Create metadata text for a mesh.
+    
+    Args:
+        threshold (float): Mesh threshold level
+        vertices_count (int): Number of vertices
+        faces_count (int): Number of faces
+        tissue_type (str): Type of tissue represented
+        metadata_info (dict): DICOM metadata
         
-        rr.log(f"{entity_path}/metadata", rr.TextDocument(metadata_text))
+    Returns:
+        str: Formatted metadata text
+    """
+    return f"""
+Mesh Level: {threshold:.1f}
+Vertices: {vertices_count}
+Faces: {faces_count}
+Color: {tissue_type}
+Series: {metadata_info['series_description']}
+Modality: {metadata_info['modality']}
+    """.strip()
+
+
+def extract_mesh_with_marching_cubes(volume_normalized, threshold):
+    """
+    Extract mesh from normalized volume using marching cubes algorithm.
+    
+    Args:
+        volume_normalized (np.ndarray): Normalized 3D volume data
+        threshold (float): Threshold level for mesh extraction
         
-        logger.info(f"Logged DICOM: {file_path}")
-        logger.info(f"  Series: {series_uid}")
-        logger.info(f"  Instance: {instance_number}")
+    Returns:
+        tuple: (vertices, faces, normals, values) or None if extraction fails
+    """
+    try:
+        return measure.marching_cubes(
+            volume_normalized, 
+            level=threshold,
+            spacing=(1.0, 1.0, 1.0)
+        )
+    except Exception as e:
+        logger = setup_logging()
+        logger.error(f"Error in marching cubes at threshold {threshold:.1f}: {str(e)}")
+        return None
+
+
+def log_mesh_to_rerun(mesh_path, vertices, faces, normals, color, threshold, metadata_info):
+    """
+    Log a mesh and its metadata to Rerun.
+    
+    Args:
+        mesh_path (str): Rerun entity path for the mesh
+        vertices (np.ndarray): Mesh vertices
+        faces (np.ndarray): Mesh faces
+        normals (np.ndarray): Mesh normals
+        color (list): Mesh color
+        threshold (float): Threshold level
+        metadata_info (dict): DICOM metadata
+    """
+    logger = setup_logging()
+    
+    # Log the mesh
+    rr.log(
+        mesh_path,
+        rr.Mesh3D(
+            vertex_positions=vertices,
+            triangle_indices=faces,
+            vertex_normals=normals,
+            vertex_colors=color
+        )
+    )
+    
+    # Create and log metadata
+    tissue_type = get_tissue_type_name(0 if threshold == 0.3 else 1 if threshold == 0.5 else 2)
+    mesh_metadata = create_mesh_metadata_text(
+        threshold, len(vertices), len(faces), tissue_type, metadata_info
+    )
+    rr.log(f"{mesh_path}/info", rr.TextDocument(mesh_metadata))
+    
+    logger.info(f"Created mesh at threshold {threshold:.1f}: {len(vertices)} vertices, {len(faces)} faces")
 
 
 def create_mesh_from_volume(volume_3d, entity_path, metadata_info):
@@ -178,61 +429,126 @@ def create_mesh_from_volume(volume_3d, entity_path, metadata_info):
     logger = setup_logging()
     
     try:
-        volume_normalized = (volume_3d - np.min(volume_3d)) / (np.max(volume_3d) - np.min(volume_3d))
-        thresholds = [0.3, 0.5, 0.7]  # Different tissue density levels
-        #  Red, Green, White
-        colors = [
-            [0.8, 0.2, 0.2, 0.7],
-            [0.2, 0.8, 0.2, 0.8],
-            [0.9, 0.9, 0.9, 0.9]
-        ]
+        volume_normalized = normalize_volume(volume_3d)
+        thresholds, colors = get_mesh_configuration()
         
         for i, threshold in enumerate(thresholds):
-            try:
-                # Use marching cubes to extract mesh
-                verts, faces, normals, values = measure.marching_cubes(
-                    volume_normalized, 
-                    level=threshold,
-                    spacing=(1.0, 1.0, 1.0)
-                )
-                
-                if len(verts) > 0 and len(faces) > 0:
-                    # Create mesh entity path for this threshold
-                    mesh_path = f"{entity_path}/threshold_{threshold:.1f}"
-                    
-                    # Log the mesh to Rerun
-                    rr.log(
-                        mesh_path,
-                        rr.Mesh3D(
-                            vertex_positions=verts,
-                            triangle_indices=faces,
-                            vertex_normals=normals,
-                            vertex_colors=colors[i]
-                        )
-                    )
-                    
-                    # Create mesh metadata
-                    mesh_metadata = f"""
-Mesh Level: {threshold:.1f}
-Vertices: {len(verts)}
-Faces: {len(faces)}
-Color: {'Soft Tissue' if i == 0 else 'Medium Density' if i == 1 else 'Bone/High Density'}
-Series: {metadata_info['series_description']}
-Modality: {metadata_info['modality']}
-                    """.strip()
-                    
-                    rr.log(f"{mesh_path}/info", rr.TextDocument(mesh_metadata))
-                    
-                    logger.info(f"Created mesh at threshold {threshold:.1f}: {len(verts)} vertices, {len(faces)} faces")
-                else:
-                    logger.warning(f"No mesh generated at threshold {threshold:.1f}")
-                    
-            except Exception as e:
-                logger.error(f"Error creating mesh at threshold {threshold:.1f}: {str(e)}")
+            mesh_data = extract_mesh_with_marching_cubes(volume_normalized, threshold)
+            
+            if mesh_data is None:
                 continue
+                
+            verts, faces, normals, values = mesh_data
+            
+            if len(verts) > 0 and len(faces) > 0:
+                mesh_path = f"{entity_path}/threshold_{threshold:.1f}"
+                log_mesh_to_rerun(mesh_path, verts, faces, normals, colors[i], threshold, metadata_info)
+            else:
+                logger.warning(f"No mesh generated at threshold {threshold:.1f}")
                 
     except Exception as e:
         logger.error(f"Error in mesh creation: {str(e)}")
+
+
+def group_files_by_series(dicom_files):
+    """
+    Group DICOM files by their series UID.
+    
+    Args:
+        dicom_files (list): List of DICOM file dictionaries
+        
+    Returns:
+        dict: Dictionary with series UID as keys and file lists as values
+    """
+    series_groups = {}
+    for file_info in dicom_files:
+        series_uid = file_info['series_uid']
+        if series_uid not in series_groups:
+            series_groups[series_uid] = []
+        series_groups[series_uid].append(file_info)
+    
+    return series_groups
+
+
+def validate_series_for_3d_volume(series_files, series_uid):
+    """
+    Validate if a series has enough images for 3D volume creation.
+    
+    Args:
+        series_files (list): List of files in the series
+        series_uid (str): Series UID
+        
+    Returns:
+        bool: True if valid for 3D volume creation
+    """
+    logger = setup_logging()
+    
+    if len(series_files) < 2:
+        logger.warning(f"Series {series_uid} has only {len(series_files)} images, skipping 3D volume creation")
+        return False
+    
+    return True
+
+
+def stack_pixel_arrays(series_files):
+    """
+    Stack pixel arrays from series files to create a 3D volume.
+    
+    Args:
+        series_files (list): List of DICOM file dictionaries
+        
+    Returns:
+        np.ndarray: 3D volume array
+    """
+    pixel_arrays = [file_info['pixel_array'] for file_info in series_files]
+    return np.stack(pixel_arrays, axis=0)
+
+
+def log_volume_to_rerun(volume_3d, series_uid, series_files):
+    """
+    Log a 3D volume, its mesh, and metadata to Rerun.
+    
+    Args:
+        volume_3d (np.ndarray): 3D volume data
+        series_uid (str): Series UID
+        series_files (list): List of DICOM files in the series
+    """
+    logger = setup_logging()
+    
+    # Log 3D tensor volume
+    tensor_entity_path = f"tensor/{series_uid}"
+    rr.log(tensor_entity_path, rr.Tensor(volume_3d))
+    
+    # Create 3D mesh
+    mesh_entity_path = f"mesh/{series_uid}"
+    create_mesh_from_volume(volume_3d, mesh_entity_path, series_files[0])
+    
+    logger.info(f"Created 3D volume for series {series_uid}")
+    logger.info(f"  Volume shape: {volume_3d.shape}")
+    logger.info(f"  Number of slices: {len(series_files)}")
+
+
+def process_single_series_for_3d_volume(series_uid, series_files):
+    """
+    Process a single series to create a 3D volume.
+    
+    Args:
+        series_uid (str): Series UID
+        series_files (list): List of DICOM files in the series
+    """
+    logger = setup_logging()
+    
+    if not validate_series_for_3d_volume(series_files, series_uid):
+        return
+    
+    logger.info(f"Creating 3D volume for series {series_uid} with {len(series_files)} slices")
+    
+    try:
+        volume_3d = stack_pixel_arrays(series_files)
+        log_volume_to_rerun(volume_3d, series_uid, series_files)
+        
+    except Exception as e:
+        logger.error(f"Error creating 3D volume for series {series_uid}: {str(e)}")
 
 
 def create_3d_volumes(dicom_files):
@@ -243,66 +559,22 @@ def create_3d_volumes(dicom_files):
         dicom_files (list): Sorted list of DICOM file metadata
     """
     logger = setup_logging()
-    logger.info(f"Creating 3D volumes from sorted DICOM instances")
+    logger.info("Creating 3D volumes from sorted DICOM instances")
     
-    # Group files by series
-    series_groups = {}
-    for file_info in dicom_files:
-        series_uid = file_info['series_uid']
-        if series_uid not in series_groups:
-            series_groups[series_uid] = []
-        series_groups[series_uid].append(file_info)
+    series_groups = group_files_by_series(dicom_files)
     
     for series_uid, series_files in series_groups.items():
-        if len(series_files) < 2:
-            logger.warning(f"Series {series_uid} has only {len(series_files)} images, skipping 3D volume creation")
-            continue
-            
-        logger.info(f"Creating 3D volume for series {series_uid} with {len(series_files)} slices")
-        
-        # Stack pixel arrays to create 3D volume
-        pixel_arrays = [file_info['pixel_array'] for file_info in series_files]
-        
-        try:
-            # Stack arrays along a new axis (depth)
-            volume_3d = np.stack(pixel_arrays, axis=0)
-            
-            # Log 3D tensor volume to Rerun
-            tensor_entity_path = f"volumes/tensor/{series_uid}"
-            rr.log(tensor_entity_path, rr.Tensor(volume_3d))
-            
-            # Create 3D mesh using marching cubes
-            mesh_entity_path = f"volumes/mesh/{series_uid}"
-            create_mesh_from_volume(volume_3d, mesh_entity_path, series_files[0])
-            
-            # Create volume metadata
-            first_file = series_files[0]
-            volume_metadata = f"""
-3D Volume - {first_file['series_description']}
-Series UID: {series_uid}
-Modality: {first_file['modality']}
-Patient ID: {first_file['patient_id']}
-Number of slices: {len(series_files)}
-Volume Shape: {volume_3d.shape}
-Data Type: {volume_3d.dtype}
-Min Value: {np.min(volume_3d)}
-Max Value: {np.max(volume_3d)}
-Mean Value: {np.mean(volume_3d):.2f}
-Instance Numbers: {[f['instance_number'] for f in series_files]}
+        process_single_series_for_3d_volume(series_uid, series_files)
 
-Available visualizations:
-- Tensor: volumes/tensor/{series_uid}
-- 3D Mesh: volumes/mesh/{series_uid}
-            """.strip()
-            
-            rr.log(f"volumes/{series_uid}/metadata", rr.TextDocument(volume_metadata))
-            
-            logger.info(f"Created 3D volume for series {series_uid}")
-            logger.info(f"  Volume shape: {volume_3d.shape}")
-            logger.info(f"  Number of slices: {len(series_files)}")
-            
-        except Exception as e:
-            logger.error(f"Error creating 3D volume for series {series_uid}: {str(e)}")
+
+
+def initialize_rerun_with_blueprint():
+    """
+    Initialize Rerun viewer with a custom blueprint.
+    """
+    blueprint = create_blueprint()
+    rr.init("dicom_viewer_1.0.3", spawn=True, default_blueprint=blueprint)
+
 
 
 def process_dicom_folder(folder_path):
@@ -314,8 +586,7 @@ def process_dicom_folder(folder_path):
     """
     logger = setup_logging()
     
-    blueprint = create_blueprint()
-    rr.init("dicom_viewer", spawn=True, default_blueprint=blueprint)
+    initialize_rerun_with_blueprint()
     dicom_files = load_and_sort_dicom_files(folder_path)
     
     if not dicom_files:
@@ -327,29 +598,6 @@ def process_dicom_folder(folder_path):
     
     # Create 3D volumes
     create_3d_volumes(dicom_files)
-    
-    # Log summary
-    total_files = len(dicom_files)
-    series_count = len(set(f['series_uid'] for f in dicom_files))
-    
-    summary_text = f"""
-DICOM Processing Summary
-|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
-Total valid DICOM files: {total_files}
-Number of series: {series_count}
-
-Visualization Options:
-• Individual images: series/{{series_uid}}
-• 3D tensor volumes: volumes/tensor/{{series_uid}}
-• 3D mesh surfaces: volumes/mesh/{{series_uid}}
-  - Red mesh: Soft tissue (threshold 0.3)
-  - Green mesh: Medium density (threshold 0.5)  
-  - White mesh: Bone/high density (threshold 0.7)
-
-Navigate the tree structure to explore different visualizations!
-    """.strip()
-    
-    rr.log("summary", rr.TextDocument(summary_text))
 
 
 def main():
