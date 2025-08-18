@@ -3,8 +3,41 @@ import logging
 from pathlib import Path
 import pydicom
 import rerun as rr
+import rerun.blueprint as rrb
 import numpy as np
 from skimage import measure
+
+
+def create_blueprint():
+    """
+    Create a Rerun blueprint with 3D meshes at the bottom and main image view at the top.
+    """
+    # Create a vertical layout with main images at top and 3D meshes at bottom
+    blueprint = rrb.Blueprint(
+        rrb.Vertical(
+            # Top section: Main image viewer (takes up more space)
+            rrb.Spatial2DView(
+                name="DICOM Images",
+                origin="series",
+                contents=["+ $origin/**"]
+            ),
+            # Bottom section: 3D mesh viewer in horizontal layout
+            rrb.Horizontal(
+                rrb.Spatial3DView(
+                    name="3D Meshes",
+                    origin="volumes/mesh",
+                    contents=["+ $origin/**"]
+                ),
+                rrb.Spatial3DView(
+                    name="3D Tensor Volumes",
+                    origin="volumes/tensor",
+                    contents=["+ $origin/**"]
+                )
+            )
+        )
+    )
+    
+    return blueprint
 
 
 def setup_logging():
@@ -281,10 +314,8 @@ def process_dicom_folder(folder_path):
     """
     logger = setup_logging()
     
-    # Initialize Rerun
-    rr.init("dicom_viewer")
-    
-    # Load and sort DICOM files
+    blueprint = create_blueprint()
+    rr.init("dicom_viewer", spawn=True, default_blueprint=blueprint)
     dicom_files = load_and_sort_dicom_files(folder_path)
     
     if not dicom_files:
@@ -294,7 +325,7 @@ def process_dicom_folder(folder_path):
     # Log individual series
     log_individual_series(dicom_files)
     
-    # Create and log 3D volumes
+    # Create 3D volumes
     create_3d_volumes(dicom_files)
     
     # Log summary
